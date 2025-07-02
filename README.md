@@ -46,18 +46,6 @@ Hard links ensure the `.csproj` file appears in the submodule’s directory with
 
 ---
 
-## What are the side effects?
-
-The only notable side effect is that Visual Studio will create its working `Temp` and `obj` folders next to each hard-linked `.csproj` file - i.e., inside submodule folders. These should be excluded from Git using `.gitignore` (which is best practice when working with Unity projects in Git).
-
-Example `.gitignore`:
-```
-[Tt]emp/
-[Oo]bj/
-```
-
----
-
 ##  Will this affect other developers?
 
 No.  You shouldn't be tracking `.csproj` or `.sln` files in Git with Unity anyway as they are automatically generated, so this script will have no effect on anything that is tracked or used by other developers.
