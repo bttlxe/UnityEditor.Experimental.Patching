@@ -28,7 +28,7 @@ This keeps Unity happy, Git clean, and Visual Studio organised.
 ---
 
 ## Where should I place this script?
-This repo contains its own `.asmdef` file and can be placed anywhere Unity can find it in your project.
+This repo contains its own `.asmdef` file and can be placed somewhere under `/Assets`.
 
 > You can use this repo as a Git submodule too!
 
