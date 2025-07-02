@@ -20,7 +20,39 @@ namespace UnityEditor.Experimental.Patching
 	public class UnityVSProjectLocationPatcher : AssetPostprocessor
 	{
 		private static readonly string ProjectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+		private static Dictionary<string, string> FoundAssemblyLocations;
 
+		static UnityVSProjectLocationPatcher()
+		{
+		}
+
+		/// <summary>
+		/// Invoked before Unity generates C# project and solution files. Allows customization or prevention of Unity's
+		/// default project file generation behavior.
+		/// </summary>
+		/// <remarks>This method can be used to perform pre-generation tasks, such as caching assembly locations or
+		/// modifying project generation settings. Returning <see langword="true"/> disables Unity's  default project file
+		/// generation, enabling custom handling.</remarks>
+		/// <returns><see langword="true"/> to prevent Unity from generating the default project files;  otherwise, <see
+		/// langword="false"/> to allow Unity to proceed with its default behavior.</returns>
+		public static bool OnPreGeneratingCSProjectFiles()
+		{
+			// This method is called before generating the C# project and solution files.
+			// It can be used to disable Unity's default behavior of generating project files.
+
+			// Cache the assembly locations to avoid repeated (slow) disk access.
+			FoundAssemblyLocations = GetUnityAssemblyLocations();
+
+			return false; // Return true to prevent Unity from generating the default project files.
+		}
+
+		/// <summary>
+		/// Modifies the content of a generated solution file.
+		/// </summary>
+		/// <param name="path">The file path of the solution file.</param>
+		/// <param name="content">The content of the solution file to be modified. This parameter is passed by reference and updated during the
+		/// operation.</param>
+		/// <returns>The modified content of the solution file.</returns>
 		public static string OnGeneratedSlnSolution(string path, string content)
 		{
 			RewriteSolutionFile(ref content);
@@ -28,6 +60,16 @@ namespace UnityEditor.Experimental.Patching
 			return content;
 		}
 
+		/// <summary>
+		/// Processes a generated C# project file and modifies its content based on specific conditions.
+		/// </summary>
+		/// <remarks>This method checks the project file's path and content to determine whether modifications are
+		/// necessary. If the file resides outside the "Library" directory and matches specific patterns, the method may
+		/// rewrite the project file, create necessary directories, and establish hard links.</remarks>
+		/// <param name="path">The file path of the generated C# project file.</param>
+		/// <param name="content">The content of the generated C# project file.</param>
+		/// <returns>The potentially modified content of the C# project file. If no modifications are made, the original content is
+		/// returned.</returns>
 		public static string OnGeneratedCSProject(string path, string content)
 		{
 			if (path.StartsWith(Path.Combine(ProjectRoot, "Library"), StringComparison.OrdinalIgnoreCase))
@@ -37,17 +79,13 @@ namespace UnityEditor.Experimental.Patching
 
 			if (match.Success)
 			{
-				string projectGuid = match.Groups["projectGuid"].Value;
+				//string projectGuid = match.Groups["projectGuid"].Value;
 				string assemblyName = match.Groups["assemblyName"].Value;
 
-				Dictionary<string, string> map = GetUnityAssemblyLocations();
-
-				if (map.TryGetValue(assemblyName, out string asmdefPath))
+				if (FoundAssemblyLocations.TryGetValue(assemblyName, out string asmdefPath))
 				{
 					string newPath = Path.Combine(asmdefPath, assemblyName + ".csproj");
-					RewriteProjectFile(ref content, path, newPath, ref map);
-
-					//UnityEngine.Debug.Log($"Rewriting project file {path} to {newPath}");
+					RewriteProjectFile(ref content, path, newPath);
 
 					string targetDir = Path.GetDirectoryName(newPath);
 					Directory.CreateDirectory(targetDir);
@@ -71,17 +109,35 @@ namespace UnityEditor.Experimental.Patching
 			return content;
 		}
 
+		/// <summary>
+		/// Creates a hard link between the specified file and an existing file.
+		/// </summary>
+		/// <remarks>This method is a platform invocation of the Windows API function <c>CreateHardLink</c>. It is
+		/// only supported on Windows. Ensure that both <paramref name="lpFileName"/> and <paramref
+		/// name="lpExistingFileName"/> are valid paths and that the  file system supports hard links.</remarks>
+		/// <param name="lpFileName">The name of the new file to be created. This must be a fully qualified path.</param>
+		/// <param name="lpExistingFileName">The name of the existing file. This must be a fully qualified path.</param>
+		/// <param name="lpSecurityAttributes">Reserved for future use. Must be <see langword="IntPtr.Zero"/>.</param>
+		/// <returns><see langword="true"/> if the hard link is successfully created; otherwise, <see langword="false"/>.</returns>
 		[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
 		private static extern bool CreateHardLink(string lpFileName, string lpExistingFileName, System.IntPtr lpSecurityAttributes);
 
+		/// <summary>
+		/// Modifies the content of a solution file to update project paths and remove duplicate project entries.
+		/// </summary>
+		/// <remarks>This method processes the solution file content line by line, updating project paths based on
+		/// predefined mappings and removing duplicate project entries. It also inserts a comment at the top of the solution
+		/// file indicating that it was modified.  The method ensures that project paths are updated relative to the project
+		/// root and avoids duplicating entries for projects with the same GUID.</remarks>
+		/// <param name="content">A reference to the string containing the solution file content. The method updates this string with the modified
+		/// solution file content.</param>
 		private static void RewriteSolutionFile(ref string content)
 		{
-			List<string> lines = new List<string>(content.Split("\r\n"));
-			List<string> outputLines = new List<string>();
-			Dictionary<string, string> assemblyLocations = GetUnityAssemblyLocations();
-			HashSet<string> seenProjects = new HashSet<string>();
+			List<string> lines = new(content.Split("\r\n"));
+			List<string> outputLines = new();
+			HashSet<string> seenProjects = new();
 
-			Regex regex = new Regex(@"Project\(""(?<solutionGuid>[^""]+)""\)\s=\s""(?<projectName>[^""]+)"",\s""[^""]+"",\s""(?<projectGuid>[^""]+)""");
+			Regex regex = new(@"Project\(""(?<solutionGuid>[^""]+)""\)\s=\s""(?<projectName>[^""]+)"",\s""[^""]+"",\s""(?<projectGuid>[^""]+)""");
 
 			for (int i = 0; i < lines.Count; i++)
 			{
@@ -96,7 +152,7 @@ namespace UnityEditor.Experimental.Patching
 					string projectGuid = match.Groups["projectGuid"].Value;
 					string newProjectPath = $"{projectName}.csproj";
 
-					if (assemblyLocations.TryGetValue(projectName, out string asmdefPath))
+					if (FoundAssemblyLocations.TryGetValue(projectName, out string asmdefPath))
 						newProjectPath = Path.Combine(asmdefPath, projectName + ".csproj");
 
 					newProjectPath = newProjectPath.Replace(ProjectRoot, "").TrimStart(Path.DirectorySeparatorChar);
@@ -124,15 +180,22 @@ namespace UnityEditor.Experimental.Patching
 			content = string.Join("\r\n", outputLines);
 		}
 
-		private static bool RewriteProjectFile(ref string content, string path, string newPath, ref Dictionary<string, string> map)
+		/// <summary>
+		/// Updates the content of a project file by rewriting relative paths to absolute paths based on the specified
+		/// original and new directories.
+		/// </summary>
+		/// <remarks>This method processes the content of a project file to replace relative paths found in specific
+		/// XML tags (e.g., <c>&lt;OutputPath&gt;</c>, <c>HintPath</c>, and <c>Include</c> attributes) with their absolute
+		/// equivalents. It uses the original and new file paths to compute the absolute paths, ensuring that the rewritten
+		/// paths are consistent with the specified directories.  The method is designed to handle relative paths only.
+		/// Absolute paths (e.g., those starting with a drive letter or UNC paths) are ignored.</remarks>
+		/// <param name="content">The content of the project file to be modified. This parameter is passed by reference and will be updated with the
+		/// rewritten paths.</param>
+		/// <param name="path">The original file path used to determine the base directory for resolving relative paths.</param>
+		/// <param name="newPath">The new file path used to determine the target base directory for resolving relative paths.</param>
+		/// <returns><see langword="true"/> if the content was modified; otherwise, <see langword="false"/>.</returns>
+		private static bool RewriteProjectFile(ref string content, string path, string newPath)
 		{
-			bool changed = false;
-
-			// Get absolute directories of original and new path
-			string originalDir = Path.GetDirectoryName(Path.GetFullPath(path))!;
-			string newDir = Path.GetDirectoryName(Path.GetFullPath(newPath))!;
-
-			// Regex to match paths inside HintPath tags and Include attributes
 			// Example path:				Match?	Reason
 			// D:\MyLib\My.dll				No		Starts with drive letter
 			// \\Server\Share\file.dll		No		Starts with UNC path (\\)
@@ -140,29 +203,37 @@ namespace UnityEditor.Experimental.Patching
 			// ..\external\lib\file.dll		Yes		Relative path
 			// C:/wrong/slash/format.dll	No		Still a drive letter path
 
-			string pattern = @"(<HintPath>|(?:Compile|None|ProjectReference)\s+Include="")(?<relPath>(?!(?:[A-Za-z]:|\\\\))[^<""\\][^<""\\]*)";
+			bool changed = false;
+
+			// Get absolute directories of original and new path
+			string originalDir = Path.GetDirectoryName(Path.GetFullPath(path));
+			string newDir = Path.GetDirectoryName(Path.GetFullPath(newPath));
+
+			// <OutputPath>Temp\bin\Debug\</OutputPath>
+			string pattern = @"<OutputPath>(.*?)</OutputPath>";
+
+			content = Regex.Replace(content, pattern, match =>
+			{
+				string tempPath = Path.Combine(originalDir, match.Groups[1].Value);
+				string objPath = Path.Combine(originalDir, "obj");
+
+				changed = true;
+				return @$"<OutputPath>{tempPath}</OutputPath>{"\r\n"}    <BaseIntermediateOutputPath>{objPath}</BaseIntermediateOutputPath>";
+			}, RegexOptions.IgnoreCase);
+
+			// Regex to match paths inside HintPath tags and Include attributes
+			pattern = @"(<HintPath>|(?:Compile|None|ProjectReference)\s+Include="")(?<relPath>(?!(?:[A-Za-z]:|\\\\))[^<""\\][^<""\\]*)";
 
 			content = Regex.Replace(content, pattern, match =>
 			{
 				string prefix = match.Groups[1].Value;
 				string relPath = match.Groups["relPath"].Value;
 
-				// Compute absolute path of original file
+				// Compute absolute path of original file.
 				string absolutePath = Path.GetFullPath(Path.Combine(originalDir, relPath));
 
-				// Compute new relative path from new location
-				string updatedRelPath = Path.GetRelativePath(newDir, absolutePath);
-
-				// MSBuild requires backslashes in paths, so we replace directory separators.
-				updatedRelPath = updatedRelPath.Replace(Path.DirectorySeparatorChar, '\\');
-
-				if (updatedRelPath != relPath)
-				{
-					changed = true;
-					return prefix + updatedRelPath;
-				}
-
-				return match.Value;
+				changed = true;
+				return prefix + absolutePath;
 			}, RegexOptions.IgnoreCase);
 
 			return changed;
@@ -173,7 +244,7 @@ namespace UnityEditor.Experimental.Patching
 		/// </summary>
 		private static Dictionary<string, string> GetUnityAssemblyLocations()
 		{
-			Dictionary<string, string> map = new Dictionary<string, string>();
+			Dictionary<string, string> map = new();
 			string[] filePaths = Directory.GetFiles(ProjectRoot, "*.asmdef", SearchOption.AllDirectories);
 
 			foreach (string filePath in filePaths)
