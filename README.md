@@ -1,56 +1,60 @@
 #  Unity + Git Submodules + VS2022 FAQ
 
-Visual studio 2022 finally supports native Git submodule handling!  Unless you are using Unity to generate your project files.
+Visual Studio 2022 supports native Git submodule handling - but Unity's default `.csproj` file generation is incompatible with it.
 
-This repo contains a Unity Editor script to fix project structure issues when using Git submodules with Unity and Visual Studio 2022. It helps ensure that solution and project files are structured in a way that Visual Studio can understand and load properly without affecting Unity or adding clutter to Git.
+This repo contains a Unity Editor script that works around this issue by restructuring `.csproj` and `.sln` files so Visual Studio 2022 can load and use them properly, while remaining fully compatible with Unity and Git.
+
+
 
 ---
 
-## Why does Visual Studio 2022 require the project files to be inside the submodule?
+## Why doesn't Unity's default structure work with Git submodules in VS2022?
 
-Visual Studio 2022 requires all referenced `.csproj` files to exist within the same directory tree as the Git submodule for its native Git handling to work. Unity creates all '.csproj` files dynamically in the root of the project, which prevents Visual Studio from seeing them correctly.
+Visual Studio 2022 requires all referenced `.csproj` files to exist within the same Git submodule directory tree in order to work with its native Git UI and project system. However, Unity generates all `.csproj` files in the root of the main project, which breaks this assumption and prevents Visual Studio from seeing them correctly within submodules.
 
 ---
 
 ## What does this Unity Editor script do?
 
-The script ensures that Unity-generated project (`.csproj`) files are created inside the submodule directory instead of the parent repository. It also updates the solution (`.sln`) file.  This makes them visible and usable by Visual Studio 2022.  It does this by creating hard links in the submodule directory to the original Unity-generated `.csproj` files, rather than creating copies.
+This script:
+
+- Uses `AssetPostprocessor.OnGeneratedSlnSolution` and `OnGeneratedCSProject` to hook into Unity's project file generation.
+- Creates hard links to Unity-generated `.csproj` files from the directories containing their corresponding `.asmdef` files.
+- Rewrites the `.sln` file to use these hard links instead of the originals.
+- Ensures paths in the `.csproj` files are shown relative to the submodule project file, not the Unity project root - improving Visual Studio’s Solution Explorer layout.
+
+This keeps Unity happy, Git clean, and Visual Studio organised.
 
 ---
 
 ## Where should I place this script?
-
-Place the script in the `Assets/Editor/` directory of your Unity project (within the submodule). Unity automatically compiles scripts in the `Editor` folder in the Editor context.
+This repo contains its own `.asmdef` file and can be placed anywhere Unity can find it in your project.
 
 > You can use this repo as a Git submodule too!
 
 ---
 
-##  Why does it use a `.gitunity` file listing the `.csproj` files in each submodule rather than analysing the code or project files directly?
+## What about assemblies from packages or the Library folder?
 
-This is due to the way Unity handles extension assemblies (via `asmref`). A single assembly—and its `.csproj` file—can include source files from multiple Git submodules. Visual Studio's Git integration does not handle this situation correctly.
-
-To avoid this, the script uses a manually maintained list of supported `.csproj` files for each submodule. This ensures a clean and accurate solution layout for Visual Studio.
-
-> *Note: This only affects Visual Studio's Git UI behavior. It has no effect on Git itself.*
+Assemblies that are part of imported Unity packages - such as those found under `Library/PackageCache/` - are ignored. The script only rewrites `.csproj` files generated for source assemblies in your actual Unity project and submodules.
 
 ---
 
-## Does it handle dependencies between submodules?
+## Why use hard links instead of copying files?
 
-Not perfectly, but it works. The `.csproj` rewriting does not currently update relative paths between project files in different submodules, and uses the root paths instead.
-
-However, the script uses hard links to replicate the relevant `.csproj` files inside each submodule. Visual Studio then uses these in the solution, and everything resolves correctly in practice.
+Hard links ensure the `.csproj` file appears in the submodule’s directory without duplicating content. Visual Studio sees a project file within the submodule, and Unity continues to manage the original. Since hard links point to the same data, there's no risk of desync or duplication.
 
 ---
 
-## What does the script modify?
+## What are the side effects?
 
-It:
+The only notable side effect is that Visual Studio will create its working `Temp` and `obj` folders next to each hard-linked `.csproj` file - i.e., inside submodule folders. These should be excluded from Git using `.gitignore` (which is best practice when working with Unity projects in Git).
 
-- Forces Unity-generated `.csproj` files to be placed inside the submodule directory tree (as defined by the .gitmodules file).
-- Creates and maintains hard links to ensure the submodule contains the necessary project files.
-- Rewrites the solution file to point to those linked files.
+Example `.gitignore`:
+```
+[Tt]emp/
+[Oo]bj/
+```
 
 ---
 
@@ -71,16 +75,5 @@ Be sure to test your development and build pipelines after enabling this setup. 
 ##  Pro tip
 
 Do not track the `.sln` and `.csproj` files. Let Unity regenerate them on each developer machine as needed.
-
----
-
-## Format of the `.gitunity` list file
-
-Each `.csproj` file should be listed in a `.gitunity` file n the root of each submodule.  The format should look like this:
-
-```
-MySubmodule.Runtime.csproj
-MySubmodule.Editor.csproj
-```
 
 ---
