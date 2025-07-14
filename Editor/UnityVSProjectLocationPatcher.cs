@@ -85,7 +85,7 @@ namespace UnityEditor.Experimental.Patching
 				if (FoundAssemblyLocations.TryGetValue(assemblyName, out string asmdefPath))
 				{
 					string newPath = Path.Combine(asmdefPath, assemblyName + ".csproj");
-					RewriteProjectFile(ref content, path, newPath);
+					RewriteProjectFile(ref content, assemblyName, path, newPath);
 
 					string targetDir = Path.GetDirectoryName(newPath);
 					Directory.CreateDirectory(targetDir);
@@ -194,7 +194,7 @@ namespace UnityEditor.Experimental.Patching
 		/// <param name="path">The original file path used to determine the base directory for resolving relative paths.</param>
 		/// <param name="newPath">The new file path used to determine the target base directory for resolving relative paths.</param>
 		/// <returns><see langword="true"/> if the content was modified; otherwise, <see langword="false"/>.</returns>
-		private static bool RewriteProjectFile(ref string content, string path, string newPath)
+		private static bool RewriteProjectFile(ref string content, string assemblyName, string path, string newPath)
 		{
 			// Example path:				Match?	Reason
 			// D:\MyLib\My.dll				No		Starts with drive letter
@@ -216,9 +216,10 @@ namespace UnityEditor.Experimental.Patching
 			{
 				string tempPath = Path.Combine(originalDir, match.Groups[1].Value);
 				string objPath = Path.Combine(originalDir, "obj");
+				string docPath = Path.Combine(originalDir, "Library", "ScriptAssemblies", assemblyName + ".xml");
 
 				changed = true;
-				return @$"<OutputPath>{tempPath}</OutputPath>{"\r\n"}    <BaseIntermediateOutputPath>{objPath}</BaseIntermediateOutputPath>";
+				return @$"<OutputPath>{tempPath}</OutputPath>{"\r\n"}    <BaseIntermediateOutputPath>{objPath}</BaseIntermediateOutputPath>{"\r\n"}    <DocumentationFile>{docPath}</DocumentationFile>{"\r\n"}    <GenerateDocumentationFile>true</GenerateDocumentationFile>";
 			}, RegexOptions.IgnoreCase);
 
 			// Regex to match paths inside HintPath tags and Include attributes
@@ -235,6 +236,35 @@ namespace UnityEditor.Experimental.Patching
 				changed = true;
 				return prefix + absolutePath;
 			}, RegexOptions.IgnoreCase);
+
+			// Add to the NoWarn section if it is not already present.
+			content = Regex.Replace(content, @"(<NoWarn>\s*[^<]*?)(</NoWarn>)", match =>
+			{
+				var nowarn = match.Groups[1].Value;
+				var suffixes = new List<string>();
+
+				if (!nowarn.Contains("1591"))
+					suffixes.Add("1591");
+				if (!nowarn.Contains("1587"))
+					suffixes.Add("1587");
+				if (!nowarn.Contains("1584"))
+					suffixes.Add("1584");
+				if (!nowarn.Contains("1574"))
+					suffixes.Add("1574");
+				if (!nowarn.Contains("1570"))
+					suffixes.Add("1570");
+				if (!nowarn.Contains("1572"))
+					suffixes.Add("1572");
+				if (!nowarn.Contains("1573"))
+					suffixes.Add("1573");
+				if (!nowarn.Contains("0282"))
+					suffixes.Add("0282");
+
+				// Append only the missing codes
+				var updatedNoWarn = suffixes.Count > 0 ? $"{nowarn};{string.Join(";", suffixes)}" : nowarn;
+
+				return $"{updatedNoWarn}{match.Groups[2].Value}";
+			});
 
 			return changed;
 		}
