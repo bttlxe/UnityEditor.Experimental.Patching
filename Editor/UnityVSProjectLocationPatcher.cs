@@ -55,6 +55,10 @@ namespace UnityEditor.Experimental.Patching
 		/// <returns>The modified content of the solution file.</returns>
 		public static string OnGeneratedSlnSolution(string path, string content)
 		{
+			// If we haven't cached the assembly locations, we do it now.
+			if (FoundAssemblyLocations == null)
+				FoundAssemblyLocations = GetUnityAssemblyLocations();
+
 			RewriteSolutionFile(ref content);
 
 			return content;
