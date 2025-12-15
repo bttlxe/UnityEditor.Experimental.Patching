@@ -14,13 +14,28 @@ namespace UnityEditor.Experimental.Patching
 	/// files to be in the submodule directory tree.
 	/// </summary>
 	/// <remarks>
-	/// Tested with Unity 6000.1 (6.1) and Visual Studio 2022.
+	/// <para>
+	/// Added support for Visual Studio 2026 (.slnx) format, which drops Project Guids from csproj files.
+	/// Solution files contain the submodule project paths to tidy the file path tree in Solution Explorer.
+	/// </para>
+	/// <para>
+	/// Tested with Unity 6000.1, 6000.2, and Visual Studio 2022 (V17) and 2026 (V18).
+	/// </para>
 	/// </remarks>
 	[InitializeOnLoad]
 	public class UnityVSProjectLocationPatcher : AssetPostprocessor
 	{
+		private const string ToolName = "UnityVSProjectLocationPatcher v2025.2";
 		private static readonly string ProjectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
 		private static Dictionary<string, string> FoundAssemblyLocations;
+
+		private enum SolutionFormat
+		{
+			sln,
+			slnx
+		}
+
+		private static SolutionFormat Format;
 
 		static UnityVSProjectLocationPatcher()
 		{
@@ -59,7 +74,12 @@ namespace UnityEditor.Experimental.Patching
 			if (FoundAssemblyLocations == null)
 				FoundAssemblyLocations = GetUnityAssemblyLocations();
 
-			RewriteSolutionFile(ref content);
+			Format = SolutionFormat.sln;
+
+			if (path.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase))
+				Format = SolutionFormat.slnx;
+
+			RewriteSolutionFile(Format, ref content);
 
 			return content;
 		}
@@ -79,11 +99,10 @@ namespace UnityEditor.Experimental.Patching
 			if (path.StartsWith(Path.Combine(ProjectRoot, "Library"), StringComparison.OrdinalIgnoreCase))
 				return content;
 
-			Match match = Regex.Match(content, @"<ProjectGuid>\s*(?<projectGuid>{[^<]+})\s*</ProjectGuid>.*?<AssemblyName>\s*(?<assemblyName>[^<]+)\s*</AssemblyName>", RegexOptions.Singleline | RegexOptions.IgnorePatternWhitespace);
+			Match match = Regex.Match(content, @"<AssemblyName>\s*(?<assemblyName>[^<]+)\s*</AssemblyName>", RegexOptions.Singleline | RegexOptions.IgnorePatternWhitespace);
 
 			if (match.Success)
 			{
-				//string projectGuid = match.Groups["projectGuid"].Value;
 				string assemblyName = match.Groups["assemblyName"].Value;
 
 				if (FoundAssemblyLocations.TryGetValue(assemblyName, out string asmdefPath))
@@ -129,13 +148,30 @@ namespace UnityEditor.Experimental.Patching
 		/// <summary>
 		/// Modifies the content of a solution file to update project paths and remove duplicate project entries.
 		/// </summary>
+		private static void RewriteSolutionFile(SolutionFormat format, ref string content)
+		{
+			switch (format)
+			{
+				case SolutionFormat.sln:
+					RewriteSolutionFileV15(ref content);
+					break;
+
+				case SolutionFormat.slnx:
+					RewriteSolutionFileV18(ref content);
+					break;
+			}
+		}
+
+		/// <summary>
+		/// Modifies the content of a solution file to update project paths and remove duplicate project entries.
+		/// </summary>
 		/// <remarks>This method processes the solution file content line by line, updating project paths based on
 		/// predefined mappings and removing duplicate project entries. It also inserts a comment at the top of the solution
 		/// file indicating that it was modified.  The method ensures that project paths are updated relative to the project
 		/// root and avoids duplicating entries for projects with the same GUID.</remarks>
 		/// <param name="content">A reference to the string containing the solution file content. The method updates this string with the modified
 		/// solution file content.</param>
-		private static void RewriteSolutionFile(ref string content)
+		private static void RewriteSolutionFileV15(ref string content)
 		{
 			List<string> lines = new(content.Split("\r\n"));
 			List<string> outputLines = new();
@@ -162,6 +198,7 @@ namespace UnityEditor.Experimental.Patching
 					newProjectPath = newProjectPath.Replace(ProjectRoot, "").TrimStart(Path.DirectorySeparatorChar);
 
 					// If we have already seen this project name, we skip it to avoid duplicates.
+					// This is because Unity will try to add both its original and the hard link created project.
 					if (seenProjects.Contains(projectGuid))
 						continue;
 
@@ -178,7 +215,61 @@ namespace UnityEditor.Experimental.Patching
 			}
 
 			// Add a comment at the top of the solution file indicating it was modified by this script.
-			outputLines.Insert(3, $"# Modified by UnityVSProjectLocationPatcher");
+			outputLines.Insert(3, $"# Modified by {ToolName}");
+
+			// Update the content with the modified lines.
+			content = string.Join("\r\n", outputLines);
+		}
+
+		/// <summary>
+		/// Modifies the content of an XML solution file to update project paths and remove duplicate project entries.
+		/// </summary>
+		/// <remarks>This method processes the solution file content line by line, updating project paths based on
+		/// predefined mappings and removing duplicate project entries. It also inserts a comment at the top of the solution
+		/// file indicating that it was modified.  The method ensures that project paths are updated relative to the project
+		/// root and avoids duplicating entries for projects with the same GUID.</remarks>
+		/// <param name="content">A reference to the string containing the solution file content. The method updates this string with the modified
+		/// solution file content.</param>
+		private static void RewriteSolutionFileV18(ref string content)
+		{
+			List<string> lines = new(content.Split("\r\n"));
+			List<string> outputLines = new();
+			HashSet<string> seenProjects = new();
+
+			Regex regex = new Regex(@"<Project Path=""(?<projectName>[^""]+).csproj"" />");
+
+			for (int i = 0; i < lines.Count; i++)
+			{
+				Match match = regex.Match(lines[i]);
+
+				if (match.Success)
+				{
+					string projectName = match.Groups["projectName"].Value;
+					string newProjectPath = $"{projectName}.csproj";
+
+					if (FoundAssemblyLocations.TryGetValue(projectName, out string asmdefPath))
+						newProjectPath = Path.Combine(asmdefPath, projectName + ".csproj");
+
+					newProjectPath = newProjectPath.Replace(ProjectRoot, "").TrimStart(Path.DirectorySeparatorChar);
+
+					// If we have already seen this project name, we skip it to avoid duplicates.
+					// This is because Unity will try to add both its original and the hard link created project.
+					if (seenProjects.Contains(Path.GetFileName(projectName)))
+						continue;
+
+					seenProjects.Add(Path.GetFileName(projectName));
+
+					outputLines.Add($"  <Project Path=\"{newProjectPath}\" />");
+				}
+				else
+				{
+					// Keep all non-project lines as-is.
+					outputLines.Add(lines[i]);
+				}
+			}
+
+			// Add a comment at the top of the solution file indicating it was modified by this script.
+			outputLines.Insert(0, $"<!-- Modified by {ToolName} -->");
 
 			// Update the content with the modified lines.
 			content = string.Join("\r\n", outputLines);
@@ -244,7 +335,7 @@ namespace UnityEditor.Experimental.Patching
 			// Add to the NoWarn section if it is not already present.
 			content = Regex.Replace(content, @"(<NoWarn>\s*[^<]*?)(</NoWarn>)", match =>
 			{
-				var nowarn = match.Groups[1].Value;
+				string nowarn = match.Groups[1].Value;
 				var suffixes = new List<string>();
 
 				if (!nowarn.Contains("1591"))
@@ -265,7 +356,7 @@ namespace UnityEditor.Experimental.Patching
 					suffixes.Add("0282");
 
 				// Append only the missing codes
-				var updatedNoWarn = suffixes.Count > 0 ? $"{nowarn};{string.Join(";", suffixes)}" : nowarn;
+				string updatedNoWarn = suffixes.Count > 0 ? $"{nowarn};{string.Join(";", suffixes)}" : nowarn;
 
 				return $"{updatedNoWarn}{match.Groups[2].Value}";
 			});
